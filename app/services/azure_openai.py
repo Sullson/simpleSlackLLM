@@ -1,9 +1,14 @@
 import base64
-from typing import List
+from typing import List, Optional
 import httpx
 
 from langchain_openai import AzureChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
+from langchain_core.messages import (
+    HumanMessage,
+    SystemMessage,
+    AIMessage,
+    BaseMessage,
+)
 
 from app.config.constants import (
     AZURE_OPENAI_API_KEY,
@@ -13,46 +18,81 @@ from app.config.constants import (
 )
 
 class AzureOpenAIService:
-    """
-    A wrapper for GPT-4o (vision-enabled) usage via LangChain's AzureChatOpenAI.
-    """
-
     def __init__(self):
-        # We assume this deployment is GPT-4o or GPT-4o-mini or whichever
-        # version you have that supports vision input
         self.llm = AzureChatOpenAI(
             azure_deployment=AZURE_OPENAI_DEPLOYMENT,
             api_key=AZURE_OPENAI_API_KEY,
             api_version=AZURE_OPENAI_API_VERSION,
             azure_endpoint=AZURE_OPENAI_ENDPOINT,
-            model="gpt-4o",  # purely for tracing/logging, set how you like
+            model="gpt-4o",
             temperature=0.7,
             streaming=False,
             max_retries=2,
         )
 
-    def process_text(self, user_text: str) -> str:
-        """Simple text-only conversation with GPT-4o."""
-        messages: List[BaseMessage] = [
-            SystemMessage(content="You are a helpful assistant."),
-            HumanMessage(content=user_text),
-        ]
-        response = self.llm.invoke(messages)
-        return response.content.strip()
+    def process_text(self, user_text: str, context: List[dict] = None) -> str:
+        """
+        Incorporates the last Slack messages as context, then appends the new user_text.
+        """
+        if context is None:
+            context = []
 
-    def process_image(self, image_base64: str, user_text: str, mimetype: str) -> str:
+        # Always start with a system message guiding the assistant
+        messages: List[BaseMessage] = [
+            SystemMessage(content=(
+                "You are a helpful assistant. You can analyze both text and images "
+                "if they are provided by the user (and slack app has file:read permissions)."
+                "You also have the history of last 5 messages in the context."
+                "You reply in Slack message formatting."
+            ))
+        ]
+
+        # Convert Slack context messages into LangChain messages
+        for c in context:
+            role = c["role"]
+            content = c["content"]
+            if role == "assistant":
+                messages.append(AIMessage(content=content))
+            else:
+                messages.append(HumanMessage(content=content))
+
+        # Finally, add the new user message at the end
+        messages.append(HumanMessage(content=user_text))
+
+        result = self.llm.invoke(messages)
+        return result.content.strip()
+
+    def process_image(self, image_base64: str, user_text: str, mimetype: str, context: List[dict] = None) -> str:
         """
-        Accepts base64 and the Slack mimetype (e.g., 'image/png').
-        We'll feed "data:image/png;base64,xxx" or "data:image/jpeg;base64,xxx"
-        to GPT-4 or GPT-4o.
+        Accept base64 image data + user text + context. 
+        The user might say "what do you see?" or "explain this image", etc.
         """
-        messages = [
-            SystemMessage(content="You are a vision-capable assistant."),
+        if context is None:
+            context = []
+
+        # Start with a system message
+        messages: List[BaseMessage] = [
+            SystemMessage(content=(
+                "You are a vision-capable assistant. You can interpret images if provided."
+            ))
+        ]
+
+        # Turn Slack context into LLM messages
+        for c in context:
+            role = c["role"]
+            content = c["content"]
+            if role == "assistant":
+                messages.append(AIMessage(content=content))
+            else:
+                messages.append(HumanMessage(content=content))
+
+        # Finally add the user request with an image block
+        messages.append(
             HumanMessage(
                 content=[
                     {
                         "type": "text",
-                        "text": user_text.strip() or "Please describe this image:",
+                        "text": user_text.strip() or "Please describe this image:"
                     },
                     {
                         "type": "image_url",
@@ -61,9 +101,8 @@ class AzureOpenAIService:
                         },
                     },
                 ]
-            ),
-        ]
-        result = self.llm.invoke(messages)
+            )
+        )
 
-        # MISSING RETURN → add this:
+        result = self.llm.invoke(messages)
         return result.content.strip()
