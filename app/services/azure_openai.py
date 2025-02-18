@@ -41,8 +41,8 @@ class AzureOpenAIService:
         messages: List[BaseMessage] = [
             SystemMessage(content=(
                 "You are a helpful assistant. You can analyze both text and images if they are provided by the user."
-                "You also have the history of last messages in the context."
-                "You only reply in Slack Markup fromat."
+                "You have the history of last few messages in the context."
+                "You always only respond with Slack-style formatting."
             ))
         ]
 
