@@ -5,8 +5,6 @@ This repository contains a **simple Slack bot** built with **FastAPI** and **Lan
 - **Text-based completions** using **Azure GPT** (GPT-35-Turbo or GPT-4 Turbo with Vision).
 - **Automatic image analysis** when a user uploads an image to Slack, utilizing a custom `process_image` function.
 
-All other LLM providers or image generation endpoints have been removed.
-
 ---
 
 ## 1. Prerequisites
