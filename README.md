@@ -1,189 +1,166 @@
-# Slack + Azure OpenAI (with Vision) Bot
+# Slack + GPT-4o (Vision) Bot
 
-This repository contains a **simple Slack bot** built with **FastAPI** and **LangChain** (via `langchain-openai`) to demonstrate:
+This repository contains a **simple Slack bot** built with **FastAPI** and **LangChain** (via [langchain-openai](https://pypi.org/project/langchain-openai/)). It demonstrates:
 
-- **Text-based completions** using **Azure GPT** (GPT-35-Turbo or GPT-4 Turbo with Vision).
-- **Automatic image analysis** when a user uploads an image to Slack, utilizing a custom `process_image` function.
+- Text-based completions using **Azure GPT-4o**.
+- Automatic **image** understanding if the user uploads an image to Slack, using GPT-4o’s vision capabilities.
 
 ---
 
 ## 1. Prerequisites
 
-1. **Python 3.10+**
-2. **Slack App** with:
-    - A **Bot Token** (`xoxb-...`)
-    - A **Slack Signing Secret**
-3. **Azure OpenAI** resource deployed with a **Chat** model that supports vision.
-    - Example: **GPT-4 Turbo with Vision** or **GPT-35-Turbo** (with `2024-02-15-preview` for vision support).
-4. Set the following environment variables:
-    - `SLACK_TOKEN`: Slack Bot token (e.g., `xoxb-...`)
-    - `SLACK_SIGNING_SECRET`: Slack signing secret
-    - `AZURE_OPENAI_API_KEY`: Your Azure OpenAI key
-    - `AZURE_OPENAI_ENDPOINT`: Example: `https://my-resource.openai.azure.com/`
-    - `AZURE_OPENAI_DEPLOYMENT`: Example: `gpt-4-vision` or `gpt-35-turbo`
-    - `AZURE_OPENAI_API_VERSION`: Example: `2024-02-15-preview`
-
-These variables can be set in a `.env` file or directly in your deployment environment.
+1. **Slack App** (with Bot token `xoxb-...` and Slack Signing Secret).
+2. **Azure OpenAI** resource deployed with a GPT-4o model supporting vision.
+3. An **Azure Container Registry (ACR)** or a **Docker Hub** account to host your container image.
+4. An **Azure Web App for Containers** instance (or ability to create one).
+5. Environment variables (to be added in Azure App Settings or `.env`):
+    - `SLACK_TOKEN` (Slack Bot token)
+    - `SLACK_SIGNING_SECRET` (Slack signing secret)
+    - `AZURE_OPENAI_API_KEY`
+    - `AZURE_OPENAI_ENDPOINT` (e.g. `https://my-resource.openai.azure.com/`)
+    - `AZURE_OPENAI_DEPLOYMENT` (name of your GPT-4o deployment, e.g. `gpt-4o-2024-08-06`)
+    - `AZURE_OPENAI_API_VERSION` (e.g. `2024-02-15-preview`)
 
 ---
 
 ## 2. Project Structure
 
 ```
-bash
-CopyEdit
-project-root/
-├── app/
-│   ├── config/
-│   │   └── constants.py        # Environment variable configurations
-│   ├── routers/
-│   │   └── slack.py            # Slack event router
-│   ├── services/
-│   │   └── azure_openai.py     # AzureOpenAIService with text and image processing
-│   ├── utils/
-│   │   └── file.py             # Slack file download and base64 utilities
-│   └── main.py                 # FastAPI startup script
-├── requirements.txt            # Project dependencies
-├── Dockerfile                  # Docker setup
-└── README.md                   # Project documentation
+.
+├─ app/
+│   ├─ config/
+│   │   └─ constants.py        # All environment variable configs
+│   ├─ routers/
+│   │   └─ slack.py            # Slack event router
+│   ├─ services/
+│   │   └─ azure_openai.py     # AzureOpenAIService w/ GPT-4o text & vision
+│   ├─ utils/
+│   │   └─ file.py             # Slack file download + base64
+│   └─ main.py                 # FastAPI startup
+├─ requirements.txt
+├─ Dockerfile
+└─ README.md
+
 ```
 
 ---
 
-## 3. Installation & Local Development
+## 3. Building & Pushing the Docker Image
 
-### 1. Clone the repository:
-
-```bash
-git clone https://github.com/your-repo/slack-azure-openai-bot.git
-cd slack-azure-openai-bot
-```
-
-### 2. Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Set environment variables:
-
-```bash
-export SLACK_TOKEN="xoxb-123-abc"
-export SLACK_SIGNING_SECRET="1234567890abcd"
-export AZURE_OPENAI_API_KEY="your-azure-key"
-export AZURE_OPENAI_ENDPOINT="https://my-resource.openai.azure.com/"
-export AZURE_OPENAI_DEPLOYMENT="gpt-4-vision"
-export AZURE_OPENAI_API_VERSION="2024-02-15-preview"
-```
-
-### 4. Run the app locally:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-### 5. Expose your local server to Slack (e.g., using `ngrok`):
-
-```bash
-ngrok http 8000
-```
-
-### 6. Configure Slack:
-
-- In **Slack App → Event Subscriptions**, set the **Request URL** to:
+1. **Build** the Docker image locally (or in GitHub Actions, or Azure DevOps, etc.):
     
-    ```
-    https://your-ngrok-url.ngrok.io/slack/events
+    ```bash
+    docker build -t your-image-name .
+
     ```
     
-- Subscribe to:
-    - `message.channels`
-    - `message.im` (for direct messages)
-- In **OAuth & Permissions**, ensure your bot has:
-    - `chat:write`
-    - `files:read`
-    - `files:write` (if needed)
+2. **Test** locally if you wish (optional):
+    
+    ```bash
+    docker run --rm -it -p 8000:8000 \
+      -e SLACK_TOKEN="xoxb-..." \
+      -e SLACK_SIGNING_SECRET="abc123" \
+      -e AZURE_OPENAI_API_KEY="..." \
+      -e AZURE_OPENAI_ENDPOINT="..." \
+      -e AZURE_OPENAI_DEPLOYMENT="..." \
+      -e AZURE_OPENAI_API_VERSION="..." \
+      your-image-name
+    ```
+    
+3. **Push** to a registry.
+    - If using Azure Container Registry (ACR), you might do:
+        
+        ```bash
+        # Log in to ACR
+        az acr login --name YOUR_ACR_NAME
+        
+        # Tag image for ACR
+        docker tag your-image-name YOUR_ACR_NAME.azurecr.io/your-image-name:latest
+        
+        # Push
+        docker push YOUR_ACR_NAME.azurecr.io/your-image-name:latest
+        ```
+        
+    - Or if using Docker Hub:
+        
+        ```bash
+        docker tag your-image-name docker.io/your-dockerhub-user/your-image-name:latest
+        docker push docker.io/your-dockerhub-user/your-image-name:latest
+        ```
+        
 
 ---
 
-## 4. Usage
+## 4. Creating an Azure Web App for Containers
 
-### Sending messages to the bot:
-
-- **Text only**: The bot calls `process_text(...)` with Azure GPT and returns a chat-style response.
-- **Image uploads**: The bot calls `process_image(...)`, which analyzes the image using Azure GPT vision capabilities and posts the result back to Slack.
-
-### Example Interactions:
-
-**Text-based query:**
-
-```
-User: What is the capital of France?
-Bot: The capital of France is Paris.
-```
-
-**Image-based query:**
-
-```
-User uploads an image (e.g., a golden retriever) and asks:
-User: "What do you see?"
-Bot: "It appears to be a golden retriever in a park."
-```
+1. In the [Azure Portal](https://portal.azure.com/), go to **Create a resource** and select **Web App**.
+2. Under **Publish**, choose **Docker** container.
+3. Under **Region**, pick where you want it hosted.
+4. For **Container Settings**:
+    - Select **Single Container** (or you can use a docker-compose approach if needed).
+    - Choose your **Registry** type (Azure Container Registry, Docker Hub, etc.).
+    - Enter your image name and tag, e.g. `YOUR_ACR_NAME.azurecr.io/your-image-name:latest`.
+    - Provide any required credentials (e.g. your ACR username/password, or Docker Hub credentials).
+5. **Review + Create** the Web App.
 
 ---
 
-## 5. Deploying via Docker
+## 5. Configure Environment Variables in Azure Web App
 
-### Build the Docker image:
+Go to your **Web App** → **Settings** → **Configuration** → **Environment Variables** (or “Application settings” depending on the UI). Add each variable:
 
-```bash
-docker build -t slack-azure-bot .
-```
+- `SLACK_TOKEN` = `xoxb-...`
+- `SLACK_SIGNING_SECRET` = (whatever Slack gave you)
+- `AZURE_OPENAI_API_KEY` = `YOUR_AZURE_OPENAI_KEY`
+- `AZURE_OPENAI_ENDPOINT` = `https://<yourresource>.openai.azure.com/`
+- `AZURE_OPENAI_DEPLOYMENT` = `gpt-4o-2024-08-06` (whatever your deployment is named)
+- `AZURE_OPENAI_API_VERSION` = `2024-02-15-preview` (or whichever)
 
-### Run the container:
-
-```bash
-docker run -it --rm -p 8000:8000 \
-  -e SLACK_TOKEN="xoxb-..." \
-  -e SLACK_SIGNING_SECRET="abc123" \
-  -e AZURE_OPENAI_API_KEY="..." \
-  -e AZURE_OPENAI_ENDPOINT="..." \
-  -e AZURE_OPENAI_DEPLOYMENT="..." \
-  -e AZURE_OPENAI_API_VERSION="..." \
-  slack-azure-bot
-```
-
-- Ensure your **container's exposed port (`8000`)** is used for your Slack Event Subscription.
+Click **Save**. The Web App will restart to load these new environment variables.
 
 ---
 
-## 6. Extending & Customizing
+## 6. Configure Slack
 
-- **Conversation History**: Store Slack messages in a database or memory for multi-turn conversations.
-- **Additional Tools**: Use LangChain’s **function calling** or integrate more external APIs.
-- **UI / Enhancements**: Add message parsing, custom formatting, or conversation memory.
-
----
-
-## 7. Notes on Azure Vision
-
-- You must have a **vision-enabled model** deployed.
-- The bot sends images as `data:image/jpeg;base64,<data>` when calling Azure OpenAI.
-- You can **modify prompts** for more detailed responses.
+1. In your Slack App settings (on api.slack.com/apps):
+    - Go to **Basic Information** → **Event Subscriptions**.
+    - Enable events, then set **Request URL** to your new Azure Web App URL plus `/slack/events`.For example: `https://my-bot.azurewebsites.net/slack/events`
+    - Under **Subscribe to Bot Events**, add events like `message.im` or `message.channels` as needed.
+2. Under **OAuth & Permissions**, ensure the **Scopes** include `chat:write`, `files:read`, etc.
+3. Install the app to your workspace.
 
 ---
 
-## 8. Troubleshooting
+## 7. Usage
 
-| Issue | Possible Causes & Fixes |
-| --- | --- |
-| **No response** | Check Slack bot token and ensure Slack events are triggered. Look at FastAPI logs. |
-| **Image not recognized** | Slack may not send the file info. Ensure `files: [...]` is present in the event payload. |
-| **Azure API errors** | Check `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_DEPLOYMENT`. |
-| **Missing Vision Capabilities** | Ensure your model supports images (e.g., `2024-02-15-preview` API version). |
+Once deployed, your Slack bot is live at the URL associated with your **Azure Web App**. Whenever a user DMs or mentions the bot (depending on your Slack configuration), Slack will send an event to `[Your-WebApp-URL]/slack/events`. The FastAPI code will:
+
+1. **Check** if the user’s message includes an image:
+    - If yes, we call the `process_image(...)` method of GPT-4o (Vision).
+2. **If not**, we call the text-based method to handle normal conversation.
+
+The response is then posted back to the same Slack channel or thread.
+
+Examples:
+
+- **Text only**:
+    - “Hey bot, what is the capital of France?” → The model replies with `Paris`.
+- **Image**:
+    - Attach an image of a cat, “What do you see here?” → The model replies with “It looks like a cat in a living room,” etc.
 
 ---
 
-## 9. License
+## 8. Troubleshooting Tips
 
-Licensed under **Apache 2.0**. Feel free to **modify and extend** as needed.
+1. **Check Logs**: In the Azure Portal, go to your Web App → **Log stream** to see the container logs.
+2. **Slack**: Check if the Slack event subscription is verified (look for a green check mark in Slack’s Event Subscriptions page).
+3. **Permissions**: The Slack Bot must have “files:read” scope if you want to process images.
+4. **Vision**: Confirm you have GPT-4o or a similar vision-enabled model. Otherwise you’ll get errors like “image not supported.”
+
+---
+
+## 9. Further Enhancements
+
+- **Multi-turn Memory**: Save Slack conversation history in a database or Redis for context.
+- **Function Calling**: Extend with more advanced function calling or tool use in GPT-4o.
+- **Autoscaling**: Adjust your Azure App’s plan to handle heavier usage.
