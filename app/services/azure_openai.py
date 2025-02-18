@@ -42,7 +42,7 @@ class AzureOpenAIService:
 
     def process_image(self, image_base64: str, user_text: str, mimetype: str) -> str:
         """
-        Accepts base64 and the actual Slack mimetype (e.g., 'image/png').
+        Accepts base64 and the Slack mimetype (e.g., 'image/png').
         We'll feed "data:image/png;base64,xxx" or "data:image/jpeg;base64,xxx"
         to GPT-4 or GPT-4o.
         """
@@ -64,3 +64,6 @@ class AzureOpenAIService:
             ),
         ]
         result = self.llm.invoke(messages)
+
+        # MISSING RETURN → add this:
+        return result.content.strip()

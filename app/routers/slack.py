@@ -69,8 +69,9 @@ def process_slack_event(event: dict):
         logging.info(f"Ignoring event type={msg_type}")
         return
 
-    # 2) Must NOT have a subtype (e.g. "channel_join", "bot_message", etc. are subtypes)
-    if subtype is not None:
+    # 2) Must have specific subtype (defined below)
+    allowed_subtypes = [None, "file_share"]
+    if subtype not in allowed_subtypes:
         logging.info(f"Ignoring event with subtype={subtype}")
         return
 
@@ -90,7 +91,7 @@ def process_slack_event(event: dict):
     # If you prefer a simple approach, you can skip placeholders.
 
     # Example placeholder:
-    placeholder_text = "Got it! Let me think..."
+    placeholder_text = "Hmmm, let me think... 🤔"
     placeholder_resp = slack_client.chat_postMessage(channel=channel, text=placeholder_text)
     placeholder_ts = placeholder_resp["ts"]
 
