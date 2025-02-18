@@ -40,21 +40,27 @@ class AzureOpenAIService:
         response = self.llm.invoke(messages)
         return response.content.strip()
 
-    def process_image(self, image_base64: str, user_text: str) -> str:
+    def process_image(self, image_base64: str, user_text: str, mimetype: str) -> str:
         """
-        Pass base64-encoded image to GPT-4o with user's question or context.
+        Accepts base64 and the actual Slack mimetype (e.g., 'image/png').
+        We'll feed "data:image/png;base64,xxx" or "data:image/jpeg;base64,xxx"
+        to GPT-4 or GPT-4o.
         """
-        messages: List[BaseMessage] = [
+        messages = [
             SystemMessage(content="You are a vision-capable assistant."),
-            HumanMessage(content=[
-                {"type": "text", "text": user_text.strip() or "Please describe this image:"},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{image_base64}"
+            HumanMessage(
+                content=[
+                    {
+                        "type": "text",
+                        "text": user_text.strip() or "Please describe this image:",
                     },
-                },
-            ]),
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mimetype};base64,{image_base64}"
+                        },
+                    },
+                ]
+            ),
         ]
-        response = self.llm.invoke(messages)
-        return response.content.strip()
+        result = self.llm.invoke(messages)
