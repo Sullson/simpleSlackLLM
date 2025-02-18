@@ -11,5 +11,5 @@ AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "")  # e.g.,
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
 
 # You can decide how many messages you want to keep in conversation if you store history:
-NUMBER_OF_MESSAGES_TO_KEEP = int(os.environ.get("NUMBER_OF_MESSAGES_TO_KEEP", "5"))
+NUMBER_OF_MESSAGES_TO_KEEP = int(os.environ.get("NUMBER_OF_MESSAGES_TO_KEEP", "7"))
 

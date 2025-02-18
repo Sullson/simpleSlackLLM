@@ -17,6 +17,7 @@ from app.config.constants import (
     AZURE_OPENAI_API_VERSION,
 )
 
+
 class AzureOpenAIService:
     def __init__(self):
         self.llm = AzureChatOpenAI(
@@ -37,13 +38,12 @@ class AzureOpenAIService:
         if context is None:
             context = []
 
-        # Always start with a system message guiding the assistant
         messages: List[BaseMessage] = [
             SystemMessage(content=(
                 "You are a helpful assistant. You can analyze both text and images "
-                "if they are provided by the user (and slack app has file:read permissions)."
-                "You also have the history of last 5 messages in the context."
-                "You reply in Slack message formatting."
+                "if they are provided by the user (and Slack app has file:read permissions). "
+                "You also have the history of last messages in the context."
+                "Reply in Slack message formatting."
             ))
         ]
 
@@ -56,28 +56,32 @@ class AzureOpenAIService:
             else:
                 messages.append(HumanMessage(content=content))
 
-        # Finally, add the new user message at the end
+        # Finally, add the new user message
         messages.append(HumanMessage(content=user_text))
 
         result = self.llm.invoke(messages)
         return result.content.strip()
 
-    def process_image(self, image_base64: str, user_text: str, mimetype: str, context: List[dict] = None) -> str:
+    def process_image(
+        self,
+        image_base64: str,
+        user_text: str,
+        mimetype: str,
+        context: List[dict] = None
+    ) -> str:
         """
-        Accept base64 image data + user text + context. 
-        The user might say "what do you see?" or "explain this image", etc.
+        Accept base64 image data + user text + context.
         """
         if context is None:
             context = []
 
-        # Start with a system message
         messages: List[BaseMessage] = [
             SystemMessage(content=(
                 "You are a vision-capable assistant. You can interpret images if provided."
             ))
         ]
 
-        # Turn Slack context into LLM messages
+        # Slack context to LLM messages
         for c in context:
             role = c["role"]
             content = c["content"]
@@ -86,7 +90,7 @@ class AzureOpenAIService:
             else:
                 messages.append(HumanMessage(content=content))
 
-        # Finally add the user request with an image block
+        # Finally add the user message with an embedded image block
         messages.append(
             HumanMessage(
                 content=[

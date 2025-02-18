@@ -1,12 +1,13 @@
 import logging
-import traceback
-
-from fastapi import APIRouter, Request, Header
+import time
+import hashlib
+import hmac
+from fastapi import APIRouter, Request, Header, HTTPException
 from starlette.background import BackgroundTasks
 from starlette.responses import Response
 from slack_sdk import WebClient
 
-from app.config.constants import SLACK_TOKEN
+from app.config.constants import SLACK_TOKEN, SLACK_SIGNING_SECRET
 from app.services.azure_openai import AzureOpenAIService
 from app.utils.file import download_file, encode_image
 
@@ -22,15 +23,58 @@ try:
 except Exception:
     logging.exception("Could not determine BOT_USER_ID via auth_test().")
 
+
+async def verify_slack_signature(request: Request):
+    """
+    Validate that this request is actually from Slack by checking:
+      - x-slack-signature
+      - x-slack-request-timestamp
+      - HMAC SHA256 using our SLACK_SIGNING_SECRET
+    """
+    # 1. Extract headers
+    slack_signature = request.headers.get("x-slack-signature")
+    slack_timestamp = request.headers.get("x-slack-request-timestamp")
+
+    # If either header is missing, fail
+    if not slack_signature or not slack_timestamp:
+        raise HTTPException(status_code=400, detail="Missing Slack signature headers")
+
+    # 2. Guard against replay attacks: only allow if < 5 minutes old
+    if abs(time.time() - int(slack_timestamp)) > 60 * 5:
+        raise HTTPException(status_code=400, detail="Slack request timestamp is too old.")
+
+    # 3. Read the raw body
+    raw_body = await request.body()
+    body_str = raw_body.decode("utf-8")
+
+    # 4. Construct the signature base string
+    basestring = f"v0:{slack_timestamp}:{body_str}"
+
+    # 5. Compute our own HMAC SHA256 signature
+    my_signature = "v0=" + hmac.new(
+        SLACK_SIGNING_SECRET.encode("utf-8"),
+        basestring.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+
+    # 6. Compare ours vs Slack’s
+    if not hmac.compare_digest(my_signature, slack_signature):
+        raise HTTPException(status_code=401, detail="Invalid Slack signature")
+
+
 @router.post("/events")
 async def slack_events(
     request: Request,
     background_tasks: BackgroundTasks,
     headers: Header = None,
 ):
+    # 1) Verify Slack signature
+    await verify_slack_signature(request)
+
+    # 2) Parse JSON body
     body = await request.json()
 
-    # Slack challenge verification (when first enabling event subscription)
+    # Slack challenge verification (when you first enable event subscription)
     if "challenge" in body:
         return Response(content=body["challenge"], media_type="text/plain")
 
@@ -45,6 +89,13 @@ async def slack_events(
 
 
 def process_slack_event(event: dict):
+    """
+    This runs in a background task.
+    We only proceed if:
+      - msg_type == "message"
+      - subtype is either None or "file_share"
+      - user_id != our bot user ID
+    """
     msg_type = event.get("type")
     subtype = event.get("subtype")
     user_id = event.get("user")
@@ -152,18 +203,14 @@ def fetch_last_messages(channel: str, limit: int = 6):
 
         context_list = []
         for msg in messages:
-            # If Slack included a subtype we don't want (like bot_message),
-            # we skip. We do allow file_share.
             subtype = msg.get("subtype")
             if subtype not in (None, "file_share"):
                 continue
 
-            # Identify if it's the bot or the user
             this_user_id = msg.get("user")
             text = msg.get("text", "")
 
             if not this_user_id:
-                # Possibly system, no user field
                 continue
 
             role = "assistant" if this_user_id == BOT_USER_ID else "user"
