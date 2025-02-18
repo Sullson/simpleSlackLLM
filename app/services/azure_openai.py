@@ -40,10 +40,9 @@ class AzureOpenAIService:
 
         messages: List[BaseMessage] = [
             SystemMessage(content=(
-                "You are a helpful assistant. You can analyze both text and images "
-                "if they are provided by the user (and Slack app has file:read permissions). "
+                "You are a helpful assistant. You can analyze both text and images if they are provided by the user."
                 "You also have the history of last messages in the context."
-                "Reply in Slack message formatting."
+                "You only reply in Slack Markup fromat."
             ))
         ]
 
