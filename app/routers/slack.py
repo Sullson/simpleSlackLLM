@@ -2,7 +2,7 @@ import logging
 import time
 import hashlib
 import hmac
-import threading  # <-- NEW import for threading
+import threading  # <-- For running the Azure OpenAI call in the background
 from fastapi import APIRouter, Request, Header, HTTPException
 from starlette.background import BackgroundTasks
 from starlette.responses import Response
@@ -12,7 +12,6 @@ from app.config.constants import SLACK_TOKEN, SLACK_SIGNING_SECRET
 from app.services.azure_openai import AzureOpenAIService
 from app.utils.file import download_file, encode_image
 
-# [NEW] Import the markdown -> Slack converter
 from app.utils.md_to_slack import markdown_to_slack
 
 router = APIRouter()
@@ -93,7 +92,7 @@ async def slack_events(
 
 def process_slack_event(event: dict):
     """
-    This runs in a background task.
+    Runs in a background task.
     We only proceed if:
       - msg_type == "message"
       - subtype is either None or "file_share"
@@ -103,23 +102,22 @@ def process_slack_event(event: dict):
     subtype = event.get("subtype")
     user_id = event.get("user")
 
-    # 1) Must be "message"
+    # Must be "message"
     if msg_type != "message":
         logging.info(f"Ignoring event type={msg_type}")
         return
 
-    # 2) We only allow normal user messages (no subtype) OR file_share subtype
-    allowed_subtypes = [None, "file_share"]
-    if subtype not in allowed_subtypes:
+    # Only allow normal user messages or file_share
+    if subtype not in [None, "file_share"]:
         logging.info(f"Ignoring event with subtype={subtype}")
         return
 
-    # 3) Must have a user ID that's not our bot
+    # Must have a user ID that's not our bot
     if not user_id or user_id == BOT_USER_ID:
         logging.info(f"Ignoring event from user={user_id}")
         return
 
-    # => If we reach here, it's a user message or file_share from a human
+    # => It's a user message or file_share from a human
     channel = event.get("channel", "")
     thread_ts = event.get("thread_ts") or event.get("ts", "")
     user_text = event.get("text", "")
@@ -128,7 +126,7 @@ def process_slack_event(event: dict):
     # 1) Fetch the last 6 messages for context
     context_messages = fetch_last_messages(channel=channel, limit=6)
 
-    # 2) Post the FIRST placeholder message
+    # 2) Post placeholders to rotate every 2s
     placeholder_messages = [
         "Hmmm, let me think... 👀",
         "Stirring data... 🍵",
@@ -139,33 +137,32 @@ def process_slack_event(event: dict):
         "That is a hard one... 🤖",
         "Tuning AI... 🎛️",
         "Nearly there... ⏳",
-        "Kinda lost, but will sort it out... 🫤"
+        "Just a bit more......"
     ]
 
-    first_placeholder = placeholder_messages[0]
     placeholder_resp = slack_client.chat_postMessage(
         channel=channel,
-        text=first_placeholder
+        text=placeholder_messages[0]
     )
     placeholder_ts = placeholder_resp["ts"]
 
-    # 3) We'll generate the final response in a separate thread
+    # 3) Run the Azure OpenAI call in a separate thread
     result_holder = {}
 
     def generate_response():
         """
-        This function does the actual Azure OpenAI calls,
-        storing the final text or error into `result_holder`.
+        Does the actual Azure OpenAI calls.
+        Stores final text or error in `result_holder`.
         """
         try:
-            # If no files, process text
+            # If no files, treat as text
             if not files:
                 final_resp = openai_service.process_text(
                     user_text=user_text,
                     context=context_messages
                 )
             else:
-                # see if there's an image
+                # Check if at least one file is an image
                 image_found = False
                 for f in files:
                     mime = f.get("mimetype", "")
@@ -178,41 +175,37 @@ def process_slack_event(event: dict):
                             final_resp = openai_service.process_image(
                                 image_base64=encoded,
                                 user_text=user_text,
-                                mimetype=mime or "image/png",
+                                mimetype=mime,
                                 context=context_messages
                             )
                         else:
                             final_resp = "Could not download your image from Slack."
                         break
                 if not image_found:
-                    # No image recognized, treat as text
                     final_resp = (
-                        "File was not recognized as an image. I'll just answer text:\n\n"
+                        "File was not recognized as an image. "
+                        "I'll just answer text:\n\n"
                         + openai_service.process_text(
                             user_text=user_text,
                             context=context_messages
                         )
                     )
 
-            # Convert the final text from standard Markdown to Slack markup
+            # Convert final text from Markdown to Slack markup
             result_holder["text"] = markdown_to_slack(final_resp)
 
         except Exception as e:
             logging.exception("Error generating OpenAI response")
             result_holder["error"] = str(e)
 
-    # Start that thread
     t = threading.Thread(target=generate_response)
     t.start()
 
-    # 4) Meanwhile, rotate through placeholders every 2s until thread finishes or we exhaust messages
+    # 4) Meanwhile, rotate placeholder text every 2s until done or we run out
     for idx in range(1, len(placeholder_messages)):
-        time.sleep(2)
-
-        # if the thread is done, break early
+        time.sleep(3)
         if not t.is_alive():
             break
-
         next_placeholder = placeholder_messages[idx]
         try:
             slack_client.chat_update(
@@ -221,30 +214,38 @@ def process_slack_event(event: dict):
                 text=next_placeholder
             )
         except Exception:
-            logging.exception("Failed to update placeholder message")
+            logging.exception("Failed updating placeholder text")
 
-    # If still alive, wait for the thread to finish
+    # Wait for the thread to finish if still alive
     t.join()
 
-    # 5) Remove the placeholder and post the final result (or error)
+    # 5) Remove the placeholder
     try:
         slack_client.chat_delete(channel=channel, ts=placeholder_ts)
     except Exception:
         logging.exception("Failed to delete placeholder message")
 
+    # 6) Post final response:
+    #    - For DMs (channel ID starts with 'D'), post everything top-level.
+    #    - For channels, only post errors in thread, success top-level.
+    is_dm = channel.startswith("D")
     if "error" in result_holder:
         short_err = result_holder["error"].splitlines()[-1]
-        slack_client.chat_postMessage(
-            channel=channel,
-            text=f"Error: {short_err}",
-            thread_ts=thread_ts
-        )
+        # If it's a DM, no thread_ts. If channel, post error in thread.
+        if is_dm:
+            slack_client.chat_postMessage(channel=channel, text=f"Error: {short_err}")
+        else:
+            slack_client.chat_postMessage(
+                channel=channel,
+                text=f"Error: {short_err}",
+                thread_ts=thread_ts
+            )
     else:
         final_text = result_holder.get("text", "No response.")
+        # For success: always top-level
         slack_client.chat_postMessage(
             channel=channel,
-            text=final_text,
-            thread_ts=thread_ts
+            text=final_text
         )
 
 
@@ -252,14 +253,11 @@ def fetch_last_messages(channel: str, limit: int = 6):
     """
     Fetch the last `limit` messages from Slack in this channel.
     Return them as a list of dicts with roles: 'user' or 'assistant'.
-    We skip messages from Slack system, etc.
     """
     try:
         response = slack_client.conversations_history(channel=channel, limit=limit)
         messages = response.get("messages", [])
-
-        # Reverse to get them oldest to newest
-        messages = list(reversed(messages))
+        messages = list(reversed(messages))  # oldest to newest
 
         context_list = []
         for msg in messages:
