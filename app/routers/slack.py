@@ -11,6 +11,9 @@ from app.config.constants import SLACK_TOKEN, SLACK_SIGNING_SECRET
 from app.services.azure_openai import AzureOpenAIService
 from app.utils.file import download_file, encode_image
 
+# [NEW] Import the markdown -> Slack converter
+from app.utils.md_to_slack import markdown_to_slack
+
 router = APIRouter()
 slack_client = WebClient(token=SLACK_TOKEN)
 openai_service = AzureOpenAIService()
@@ -167,6 +170,9 @@ def process_slack_event(event: dict):
                         context=context_messages
                     )
                 )
+
+        # [NEW] Convert the final text from standard Markdown to Slack markup
+        response_text = markdown_to_slack(response_text)
 
         # Remove placeholder, post final success
         slack_client.chat_delete(channel=channel, ts=placeholder_ts)
