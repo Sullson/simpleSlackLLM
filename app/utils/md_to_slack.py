@@ -2,82 +2,93 @@ import re
 
 def markdown_to_slack(md_text: str) -> str:
     """
-    Convert a subset of Markdown to Slack-specific formatting.
-    
-    Conversions:
-      - Protect fenced code blocks (```code```) and inline code (`code`) from further processing.
-      - Headings:
-           * Hash-style headings (e.g. "# Heading" or "## Heading ##") 
-             are converted to bold text.
-           * Underline-style headings (Setext headings, e.g. "Heading" followed by "===" or "---")
-             are also converted to bold text.
-      - **Bold** (using either ** or __) => *Bold*
-      - *Italic* (using a single asterisk) => _Italic_
-      - ~~Strikethrough~~ => ~Strikethrough~
-      - [Link Text](url) => <url|Link Text>
-      
-    Fenced code blocks and inline code remain unchanged.
+    Convert a subset of Markdown to Slack-specific formatting, with these enhancements:
+      1) Code blocks: remove any language spec (e.g. ```SQL => ```).
+      2) Headings (# to ######) => bold lines. If heading text contains **bold**, remove those double-asterisks so
+         we don't end up with nested bold. (e.g. "### **Key Features**" => "*Key Features*").
+      3) **bold** => *bold*
+      4) *italic* => _italic_
+      5) ~~strikethrough~~ => ~strikethrough~
+      6) [title](url) => <url|title>
+      7) Bulleted lists: lines starting with "-" become Slack bullets ("* item"). 
+         Leading spaces are turned into tabs (every 2 spaces => 1 tab).
     """
 
-    # --- Step 1. Protect Code Blocks and Inline Code ---
-    # We replace code blocks and inline code with placeholders to ensure that
-    # no further formatting is applied within them.
-    code_placeholders = {}
-    placeholder_prefix = "__CODE_PLACEHOLDER_"
-    code_counter = 0
+    # 1) Remove language spec after triple backticks (```SQL, ```plaintext, etc.)
+    #    We keep the triple backticks, but discard the language name.
+    #    E.g. ```SQL\n => ```\n
+    #    or ```plaintext => ```
+    md_text = re.sub(
+        r'```+([^\n`]*)\n',
+        '```\n',
+        md_text
+    )
+    # (If a code block ends on the same line with a language, it’s uncommon in markdown; 
+    #  but you can expand this if needed.)
 
-    # Protect fenced code blocks (``` ... ```)
-    def replace_fenced(match):
-        nonlocal code_counter
-        code_block = match.group(0)
-        placeholder = f"{placeholder_prefix}{code_counter}__"
-        code_placeholders[placeholder] = code_block
-        code_counter += 1
-        return placeholder
+    # 2) Convert headings (# ... up to ######) => Slack bold line. 
+    #    Remove any internal **...** to avoid double bold.
+    def heading_sub(match):
+        text = match.group(2).strip()  # the heading text
+        # Remove any ** markers inside the heading
+        text = re.sub(r'\*\*', '', text)
+        return f"*{text}*"
 
-    md_text = re.sub(r'```[\s\S]*?```', replace_fenced, md_text)
+    # Regex for heading lines: up to 6 '#' plus a space, then text
+    md_text = re.sub(
+        r'^(#{1,6})\s+(.*)$',
+        heading_sub,
+        md_text,
+        flags=re.MULTILINE
+    )
 
-    # Protect inline code (`...`)
-    def replace_inline(match):
-        nonlocal code_counter
-        code_span = match.group(0)
-        placeholder = f"{placeholder_prefix}{code_counter}__"
-        code_placeholders[placeholder] = code_span
-        code_counter += 1
-        return placeholder
+    # 3) Convert bold: **text** => *text*
+    md_text = re.sub(
+        r'\*\*(.+?)\*\*',
+        r'*\1*',
+        md_text,
+        flags=re.DOTALL
+    )
 
-    md_text = re.sub(r'`[^`]+?`', replace_inline, md_text)
+    # 4) Convert italic: *text* => _text_
+    #    (Naive approach; can conflict with nested bold if e.g. ***...***)
+    md_text = re.sub(
+        r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)',
+        r'_\1_',
+        md_text,
+        flags=re.DOTALL
+    )
 
-    # --- Step 2. Convert Underline-Style Headings (Setext) ---
-    # E.g., convert:
-    #     Heading
-    #     =======
-    # into bold text.
-    md_text = re.sub(r'(?m)^(?!\s*$)(.*?)\n(=+)\s*$', r'*\1*', md_text)
-    md_text = re.sub(r'(?m)^(?!\s*$)(.*?)\n(-+)\s*$', r'*\1*', md_text)
+    # 5) Convert strikethrough: ~~text~~ => ~text~
+    md_text = re.sub(
+        r'~~(.+?)~~',
+        r'~\1~',
+        md_text,
+        flags=re.DOTALL
+    )
 
-    # --- Step 3. Convert Hash-Style Headings ---
-    # This will convert headings like "# Heading" or "### Heading ###" to bold.
-    md_text = re.sub(r'(?m)^(#{1,6})\s*(.*?)\s*(?:#+\s*)?$', r'*\2*', md_text)
+    # 6) Convert links: [title](url) => <url|title>
+    md_text = re.sub(
+        r'\[(.*?)\]\((.*?)\)',
+        r'<\2|\1>',
+        md_text
+    )
 
-    # --- Step 4. Convert Bold Text ---
-    # Convert both **text** and __text__ to Slack bold (using asterisks).
-    md_text = re.sub(r'(\*\*|__)(.+?)\1', r'*\2*', md_text, flags=re.DOTALL)
+    # 7) Convert bulleted lists: lines that start with "-" => Slack bullet
+    #    Also handle indentation by mapping every 2 leading spaces => 1 tab.
+    def bullet_sub(match):
+        leading_spaces = match.group(1) or ""
+        text_after_dash = match.group(2)
+        # each 2 spaces => 1 tab
+        tab_count = len(leading_spaces) // 2
+        return f"{'\t' * tab_count}* {text_after_dash}"
 
-    # --- Step 5. Convert Italic Text ---
-    # Convert single-asterisk italic to Slack italic (using underscores).
-    md_text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'_\1_', md_text, flags=re.DOTALL)
-
-    # --- Step 6. Convert Strikethrough ---
-    # Convert ~~text~~ to Slack strikethrough (~text~).
-    md_text = re.sub(r'~~(.+?)~~', r'~\1~', md_text, flags=re.DOTALL)
-
-    # --- Step 7. Convert Links ---
-    # Convert [Link Text](url) to Slack's link format: <url|Link Text>
-    md_text = re.sub(r'\[(.*?)\]\((.*?)\)', r'<\2|\1>', md_text)
-
-    # --- Step 8. Restore Protected Code Blocks/Spans ---
-    for placeholder, code in code_placeholders.items():
-        md_text = md_text.replace(placeholder, code)
+    # Matches lines that look like (some spaces) - (then text)
+    md_text = re.sub(
+        r'^([ ]*)- (.*)',
+        bullet_sub,
+        md_text,
+        flags=re.MULTILINE
+    )
 
     return md_text

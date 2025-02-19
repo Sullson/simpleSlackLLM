@@ -42,7 +42,6 @@ class AzureOpenAIService:
             SystemMessage(content=(
                 "You are a helpful assistant. You can analyze both text and images if they are provided by the user."
                 "You have the history of last few messages in the context."
-                "You always only respond with Slack-style formatting."
             ))
         ]
 

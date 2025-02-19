@@ -11,7 +11,7 @@ from app.config.constants import SLACK_TOKEN, SLACK_SIGNING_SECRET
 from app.services.azure_openai import AzureOpenAIService
 from app.utils.file import download_file, encode_image
 
-# [NEW] Import the markdown -> Slack converter
+# Import the markdown -> Slack converter
 from app.utils.md_to_slack import markdown_to_slack
 
 router = APIRouter()
@@ -171,12 +171,12 @@ def process_slack_event(event: dict):
                     )
                 )
 
-        # [NEW] Convert the final text from standard Markdown to Slack markup
-        response_text = markdown_to_slack(response_text)
+        # Convert final text from standard Markdown to Slack markup
+        slackified_text = markdown_to_slack(response_text)
 
-        # Remove placeholder, post final success
+        # Remove placeholder and post final success
         slack_client.chat_delete(channel=channel, ts=placeholder_ts)
-        slack_client.chat_postMessage(channel=channel, text=response_text)
+        slack_client.chat_postMessage(channel=channel, text=slackified_text, thread_ts=thread_ts)
 
     except Exception as e:
         logging.exception("Error processing Slack event")
