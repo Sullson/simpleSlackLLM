@@ -1,11 +1,8 @@
-# app/routers/slack.py
-
 import logging
 import time
 import hashlib
 import hmac
-import json
-import threading  # For running the Azure OpenAI call in the background
+import threading  # <-- For running the Azure OpenAI call in the background
 from fastapi import APIRouter, Request, Header, HTTPException
 from starlette.background import BackgroundTasks
 from starlette.responses import Response
@@ -14,6 +11,7 @@ from slack_sdk import WebClient
 from app.config.constants import SLACK_TOKEN, SLACK_SIGNING_SECRET
 from app.services.azure_openai import AzureOpenAIService
 from app.utils.file import download_file, encode_image
+
 from app.utils.md_to_slack import markdown_to_slack
 
 router = APIRouter()
@@ -29,15 +27,15 @@ except Exception:
     logging.exception("Could not determine BOT_USER_ID via auth_test().")
 
 
-def verify_slack_signature(raw_body: bytes, headers):
+async def verify_slack_signature(request: Request):
     """
     Validate that this request is actually from Slack by checking:
       - x-slack-signature
       - x-slack-request-timestamp
       - HMAC SHA256 using our SLACK_SIGNING_SECRET
     """
-    slack_signature = headers.get("x-slack-signature")
-    slack_timestamp = headers.get("x-slack-request-timestamp")
+    slack_signature = request.headers.get("x-slack-signature")
+    slack_timestamp = request.headers.get("x-slack-request-timestamp")
 
     # If either header is missing, fail
     if not slack_signature or not slack_timestamp:
@@ -47,8 +45,11 @@ def verify_slack_signature(raw_body: bytes, headers):
     if abs(time.time() - int(slack_timestamp)) > 60 * 5:
         raise HTTPException(status_code=400, detail="Slack request timestamp is too old.")
 
-    # Construct the signature base string
+    # Read the raw body
+    raw_body = await request.body()
     body_str = raw_body.decode("utf-8")
+
+    # Construct the signature base string
     basestring = f"v0:{slack_timestamp}:{body_str}"
 
     # Compute our own HMAC SHA256 signature
@@ -69,33 +70,20 @@ async def slack_events(
     background_tasks: BackgroundTasks,
     headers: Header = None,
 ):
-    """
-    Main endpoint Slack calls for event subscriptions.
-    """
-    # 1) Read the raw body once
-    raw_body = await request.body()
+    # 1) Verify Slack signature
+    await verify_slack_signature(request)
 
-    # 2) Verify Slack signature (HMAC)
-    verify_slack_signature(raw_body, request.headers)
+    # 2) Parse JSON body
+    body = await request.json()
 
-    # 3) Parse JSON from that same raw body
-    body = json.loads(raw_body.decode("utf-8"))
-
-    # 4) Slack "url_verification" challenge
-    if body.get("type") == "url_verification":
-        # Just return the challenge text as Slack expects
+    # Slack challenge verification (when you first enable event subscription)
+    if "challenge" in body:
         return Response(content=body["challenge"], media_type="text/plain")
 
-    # (Alternatively, if you want to check for "challenge" in the body
-    #  instead of "type":)
-    # if "challenge" in body:
-    #     return Response(content=body["challenge"], media_type="text/plain")
-
-    # Return 200 quickly if Slack is retrying
+    # Always return 200, so Slack doesn't keep retrying
     if request.headers.get("x-slack-retry-num"):
         logging.info("Slack retry header present; returning 200 instantly.")
 
-    # Otherwise, handle a normal Slack event
     event = body.get("event", {})
     background_tasks.add_task(process_slack_event, event)
 
@@ -105,6 +93,10 @@ async def slack_events(
 def process_slack_event(event: dict):
     """
     Runs in a background task.
+    We only proceed if:
+      - msg_type == "message"
+      - subtype is either None or "file_share"
+      - user_id != our bot user ID
     """
     msg_type = event.get("type")
     subtype = event.get("subtype")
@@ -134,7 +126,7 @@ def process_slack_event(event: dict):
     # 1) Fetch the last 6 messages for context
     context_messages = fetch_last_messages(channel=channel, limit=6)
 
-    # 2) Post placeholders to rotate every few seconds
+    # 2) Post placeholders to rotate every 2s
     placeholder_messages = [
         "Hmmm, let me think... 👀",
         "Stirring data... 🍵",
@@ -163,8 +155,8 @@ def process_slack_event(event: dict):
         Stores final text or error in `result_holder`.
         """
         try:
+            # If no files, treat as text
             if not files:
-                # If no files, treat as text
                 final_resp = openai_service.process_text(
                     user_text=user_text,
                     context=context_messages
@@ -189,7 +181,6 @@ def process_slack_event(event: dict):
                         else:
                             final_resp = "Could not download your image from Slack."
                         break
-
                 if not image_found:
                     final_resp = (
                         "File was not recognized as an image. "
@@ -210,7 +201,7 @@ def process_slack_event(event: dict):
     t = threading.Thread(target=generate_response)
     t.start()
 
-    # 4) Rotate placeholder text every few seconds until done or we run out
+    # 4) Meanwhile, rotate placeholder text every 2s until done or we run out
     for idx in range(1, len(placeholder_messages)):
         time.sleep(3)
         if not t.is_alive():
@@ -234,15 +225,16 @@ def process_slack_event(event: dict):
     except Exception:
         logging.exception("Failed to delete placeholder message")
 
-    # 6) Post final response
+    # 6) Post final response:
+    #    - For DMs (channel ID starts with 'D'), post everything top-level.
+    #    - For channels, only post errors in thread, success top-level.
     is_dm = channel.startswith("D")
     if "error" in result_holder:
         short_err = result_holder["error"].splitlines()[-1]
+        # If it's a DM, no thread_ts. If channel, post error in thread.
         if is_dm:
-            # If it's a DM, no thread_ts
             slack_client.chat_postMessage(channel=channel, text=f"Error: {short_err}")
         else:
-            # In channels, post error in thread
             slack_client.chat_postMessage(
                 channel=channel,
                 text=f"Error: {short_err}",
